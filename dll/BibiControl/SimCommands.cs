@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using ManagementScripts;
 using Newtonsoft.Json.Linq;
 using OneUseScripts;
@@ -19,15 +20,18 @@ namespace BibiControl;
 public static class SimCommands
 {
 	private static TimeKeeper _timeKeeper;
+	private static IpcServer _server;
 
 	private static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
 	public static void Register(IpcServer server)
 	{
+		_server = server;
 		server.Register("STOP", Stop);
 		server.Register("RESUME", Resume);
 		server.Register("INFO", Info);
 		server.Register("RELOAD", Reload);
+		server.RegisterAsync("NEWSAVE", NewSave);
 	}
 
 	// STOP: pause by forcing the engine time scale to 0. Returns the configured
@@ -81,6 +85,34 @@ public static class SimCommands
 		string save = SaveController.GetLastSave();
 		GameManager.StartGame(save);
 		return new JObject { ["save"] = save, ["ok"] = true };
+	}
+
+	// NEWSAVE: mint a fresh, engine-made save from a scenario without the GUI —
+	// load the scenario, start a new game, let the world initialize, then save.
+	// Registered async: it runs on a network thread, drives the mint coroutine on
+	// the main thread, and blocks only this thread until the save is written (so
+	// it is exempt from RunOnMain's short timeout). Payload:
+	//   { "scenario": "<abs .zip | 'default' | omitted>", "out": "<abs .zip>" }
+	private static object NewSave(JToken payload)
+	{
+		string outPath = payload != null && payload["out"] != null ? payload["out"].Value<string>() : null;
+		if (string.IsNullOrEmpty(outPath))
+			throw new ArgumentException("out (destination .zip path) is required");
+		string scenario = payload != null && payload["scenario"] != null ? payload["scenario"].Value<string>() : null;
+
+		SeedMinter.MintResult res = new SeedMinter.MintResult();
+		_server.StartCoroutineOnMain(SeedMinter.MintSeedSave(scenario, outPath, res));
+
+		System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+		while (!res.Done)
+		{
+			if (sw.ElapsedMilliseconds > 180000)
+				throw new TimeoutException("mint did not complete within 180s");
+			Thread.Sleep(20);
+		}
+		if (res.Error != null)
+			throw new InvalidOperationException("mint failed: " + res.Error.Message);
+		return new JObject { ["path"] = res.Path, ["ok"] = true };
 	}
 
 	private static void RequireSimulation()

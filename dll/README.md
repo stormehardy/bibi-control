@@ -7,7 +7,12 @@ Adds two things to The Bibites:
   `-batchmode -nographics`) no window.
 - **An IPC server** — a TCP server speaking the same newline-delimited-JSON
   envelope protocol as the Go `ipc` package, implementing `STOP`, `RESUME`,
-  `INFO`, and `RELOAD`. The control plane (`simctl`) dials in and drives it.
+  `INFO`, `RELOAD`, and `NEWSAVE`. The control plane (`simctl`) dials in and
+  drives it.
+- **Seed minting** — mint a fresh, engine-made save from any scenario *without
+  the GUI*, either one-shot (`-bibiteMintSeed`) or live over IPC (`NEWSAVE`). Lets
+  you generate worlds programmatically instead of hand-building a scenario
+  in-game (a scenario is a strict subset of a save).
 
 No BepInEx / Doorstop. It is pure managed C#, so it runs on every platform the
 game's managed assembly runs on (incl. macOS/ARM).
@@ -25,6 +30,7 @@ Tested on a live install (The Bibites, Unity **6000.0.44f1**, Mono, Steam):
 | Headless launch | ✅ runs windowless (`-batchmode -nographics`), loads the given save |
 | Mod running in-game (IPC server up) | ✅ `[BibiControl] IPC listening on 127.0.0.1:43100` |
 | `STOP` / `RESUME` / `INFO` / `RELOAD` | ✅ all answered correctly over the network |
+| `NEWSAVE` / `-bibiteMintSeed` (seed minting) | ✅ verified end-to-end: minted an empty seed headless (exit 0, valid `.zip`), then round-tripped it — booted `-bibiteSave`, sim runs at 40 TPS with zero exceptions |
 
 Observed in a real run: `INFO` → `{"tps":15,"real_tps":15.0,"paused":false,...}`,
 `STOP` → `{"previous_time_scale":1}` then `paused:true`, `RESUME` at `5` then
@@ -44,7 +50,8 @@ own `AppInitializer.Awake()`.
 |------|---------|
 | `BibiControl/HeadlessController.cs` | Arg parsing, server bootstrap (`[RuntimeInitializeOnLoadMethod]`), headless redirect |
 | `BibiControl/IpcServer.cs` | TCP server, envelope framing, main-thread dispatch, command registry |
-| `BibiControl/SimCommands.cs` | `STOP` / `RESUME` / `INFO` / `RELOAD` handlers |
+| `BibiControl/SimCommands.cs` | `STOP` / `RESUME` / `INFO` / `RELOAD` / `NEWSAVE` handlers |
+| `BibiControl/SeedMinter.cs` | Mints a save from a scenario; shared by `-bibiteMintSeed` and `NEWSAVE` |
 | `BibiControl/Envelope.cs` | JSON envelope DTO (mirrors `ipc.Envelope`) |
 | `BibiControl.csproj` | Builds the mod as a DLL |
 | `patcher/` | Mono.Cecil tool that injects the mod into the game's assembly (the proven loader) |
@@ -139,8 +146,51 @@ Flags:
 | `-bibiteSave <path\|latest>` | (none) | Save to auto-load; `latest` = newest save the game finds (quote if it has spaces) |
 | `-bibiteIpcPort <port>` | `43100` | TCP listen port |
 | `-bibiteIpcHost <host>` | `127.0.0.1` | Bind host (`0.0.0.0` to listen on all interfaces) |
+| `-bibiteMintSeed` | off | One-shot: mint a seed save from a scenario, then quit |
+| `-bibiteScenario <path\|default>` | `default` | Scenario to mint from (absolute `.zip`, or the bundled default) |
+| `-bibiteOut <path>` | (none) | Destination `.zip` for the minted save (required with `-bibiteMintSeed`) |
 
 ---
+
+## Minting a seed save
+
+The Go tooling *mutates* save files but can't create one from scratch — so you
+need one engine-made seed to build on. This mints one from a scenario (which is a
+strict subset of a save), with no GUI. Two ways, identical output:
+
+**One-shot (launch → write → exit):**
+
+```
+"…\The Bibites.exe" -batchmode -nographics ^
+  -bibiteMintSeed ^
+  -bibiteScenario default ^
+  -bibiteOut "C:\seeds\seed.zip"
+```
+
+It boots, starts a new game from the scenario, saves to `-bibiteOut`, and quits
+(exit `0` on success, `1` on failure). `-bibiteScenario` takes an absolute
+scenario `.zip`, or `default` for the bundled Default scenario. The
+`steam_appid.txt` / launch-option gotchas above still apply.
+
+**Live, over IPC (`NEWSAVE`):** boot headless with the IPC server and *no*
+`-bibiteSave` (so it idles in the menu), then drive it:
+
+```go
+sim := simctl.New(sess)
+res, _ := sim.NewSave(ctx, "default", `C:\seeds\seed.zip`)  // res.Path = file written
+```
+
+The minted seed is empty (scenario rules + zones, but no bibites and no initial
+pellets) — purely additive ground for the save mutator.
+
+> Note: the screenshot step in the game's own save path is a no-op under
+> `-nographics` (it writes a blank `img.png`), so **no patching of the game's save
+> code is required** — `NEWSAVE` reuses `SaveSystem.SaveGame` as-is.
+>
+> Both minting and loading a save headless first wait for the game's procedural
+> sprite atlas (it loads lazily in the menu and persists into the sim). Otherwise
+> new-game pellet seeding and loaded entities index it before it's populated and
+> throw `IndexOutOfRange` under `-nographics`.
 
 ## Testing it (end to end)
 
@@ -168,6 +218,7 @@ prev, _ := sim.Stop(ctx)                       // pause; prev.PreviousTimeScale 
 info, _ := sim.Info(ctx)                        // info.TPS / RealTPS / Paused / LastAutosave
 _, _    = sim.Resume(ctx, prev.PreviousTimeScale) // unpause at the prior speed
 _, _    = sim.Reload(ctx)                       // reload most recent save
+res, _  := sim.NewSave(ctx, "default", outPath) // mint a seed save from a scenario
 ```
 
 `*ipc.Session`, `*ipc.OpaqueNode`, and `*noderuntime.Runtime` all satisfy

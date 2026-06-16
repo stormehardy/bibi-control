@@ -9,10 +9,11 @@ package ipc
 // a command: add a constant here, the payload/result type(s), a method on
 // simctl.Client, and a handler on the DLL side.
 const (
-	CommandStop   = "STOP"
-	CommandResume = "RESUME"
-	CommandInfo   = "INFO"
-	CommandReload = "RELOAD"
+	CommandStop    = "STOP"
+	CommandResume  = "RESUME"
+	CommandInfo    = "INFO"
+	CommandReload  = "RELOAD"
+	CommandNewSave = "NEWSAVE"
 )
 
 // StopResult is returned by STOP. PreviousTimeScale is the simulation speed that
@@ -59,5 +60,20 @@ type InfoResult struct {
 // ReloadResult is returned by RELOAD. Save is the file the game began reloading.
 type ReloadResult struct {
 	Save string `json:"save,omitempty"`
+	Ok   bool   `json:"ok"`
+}
+
+// NewSaveRequest is the payload for NEWSAVE. Scenario selects what to mint from:
+// an absolute path to a scenario .zip, or "" / "default" for the game's bundled
+// Default scenario. Out is the absolute destination path for the minted save
+// .zip (required).
+type NewSaveRequest struct {
+	Scenario string `json:"scenario,omitempty"`
+	Out      string `json:"out"`
+}
+
+// NewSaveResult is returned by NEWSAVE. Path is the save file that was written.
+type NewSaveResult struct {
+	Path string `json:"path,omitempty"`
 	Ok   bool   `json:"ok"`
 }

@@ -22,6 +22,7 @@ type fakeSim struct {
 	mu          sync.Mutex
 	lastCommand string
 	lastResume  ipc.ResumeRequest
+	lastNewSave ipc.NewSaveRequest
 }
 
 func newFakeSim(conn net.Conn) *fakeSim {
@@ -82,6 +83,18 @@ func (f *fakeSim) handle(env ipc.Envelope) (json.RawMessage, string) {
 		}), ""
 	case ipc.CommandReload:
 		return mustJSON(ipc.ReloadResult{Save: "/saves/Autosaves/autosave_20260615.zip", Ok: true}), ""
+	case ipc.CommandNewSave:
+		var req ipc.NewSaveRequest
+		if err := json.Unmarshal(env.Payload, &req); err != nil {
+			return nil, err.Error()
+		}
+		if req.Out == "" {
+			return nil, "out (destination .zip path) is required"
+		}
+		f.mu.Lock()
+		f.lastNewSave = req
+		f.mu.Unlock()
+		return mustJSON(ipc.NewSaveResult{Path: req.Out, Ok: true}), ""
 	default:
 		return nil, "unknown command: " + env.Command
 	}
@@ -172,6 +185,34 @@ func TestReload(t *testing.T) {
 	}
 	if !res.Ok || res.Save == "" {
 		t.Fatalf("unexpected reload: %+v", res)
+	}
+}
+
+func TestNewSave(t *testing.T) {
+	c, sim, _ := newClientServer(t)
+	res, err := c.NewSave(testCtx(t), "default", `C:\seeds\seed.zip`)
+	if err != nil {
+		t.Fatalf("NewSave: %v", err)
+	}
+	if !res.Ok || res.Path != `C:\seeds\seed.zip` {
+		t.Fatalf("unexpected newsave: %+v", res)
+	}
+	sim.mu.Lock()
+	defer sim.mu.Unlock()
+	if sim.lastCommand != ipc.CommandNewSave {
+		t.Fatalf("command = %q, want %q", sim.lastCommand, ipc.CommandNewSave)
+	}
+	if sim.lastNewSave.Out != `C:\seeds\seed.zip` || sim.lastNewSave.Scenario != "default" {
+		t.Fatalf("server saw %+v", sim.lastNewSave)
+	}
+}
+
+// TestNewSaveRequiresOut verifies the server rejects a NEWSAVE with no out path.
+func TestNewSaveRequiresOut(t *testing.T) {
+	c, _, _ := newClientServer(t)
+	_, err := c.NewSave(testCtx(t), "default", "")
+	if err == nil {
+		t.Fatal("expected error when out is empty")
 	}
 }
 

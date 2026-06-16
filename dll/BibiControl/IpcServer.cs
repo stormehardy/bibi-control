@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
@@ -35,6 +36,7 @@ public sealed class IpcServer : MonoBehaviour
 	private volatile bool _running;
 
 	private readonly Dictionary<string, CommandHandler> _handlers = new Dictionary<string, CommandHandler>(StringComparer.Ordinal);
+	private readonly Dictionary<string, CommandHandler> _asyncHandlers = new Dictionary<string, CommandHandler>(StringComparer.Ordinal);
 	private readonly ConcurrentQueue<Action> _mainThreadQueue = new ConcurrentQueue<Action>();
 	private readonly List<TcpClient> _clients = new List<TcpClient>();
 	private readonly object _clientsLock = new object();
@@ -54,6 +56,16 @@ public sealed class IpcServer : MonoBehaviour
 	public void Register(string command, CommandHandler handler)
 	{
 		_handlers[command] = handler;
+	}
+
+	// Registers a long-running handler. Unlike Register, an async handler runs on
+	// the network thread (it is NOT marshaled through RunOnMain), so it may take
+	// many seconds and drive a multi-frame coroutine on the main thread via
+	// StartCoroutineOnMain without blocking the frame loop. The handler is
+	// responsible for its own main-thread marshaling.
+	public void RegisterAsync(string command, CommandHandler handler)
+	{
+		_asyncHandlers[command] = handler;
 	}
 
 	private void Start()
@@ -169,6 +181,25 @@ public sealed class IpcServer : MonoBehaviour
 			Time = NowRfc3339(),
 		};
 
+		// Async commands run on this (network) thread and do their own marshaling;
+		// they may block for many seconds (e.g. minting a save) without stalling
+		// the main thread. Checked before the sync registry.
+		CommandHandler asyncHandler;
+		if (_asyncHandlers.TryGetValue(req.Command ?? string.Empty, out asyncHandler))
+		{
+			try
+			{
+				object result = asyncHandler(req.Payload);
+				reply.Payload = result as JToken ?? (result != null ? JToken.FromObject(result) : null);
+			}
+			catch (Exception e)
+			{
+				reply.Kind = "error";
+				reply.Error = e.Message;
+			}
+			return reply;
+		}
+
 		CommandHandler handler;
 		if (!_handlers.TryGetValue(req.Command ?? string.Empty, out handler))
 		{
@@ -209,6 +240,16 @@ public sealed class IpcServer : MonoBehaviour
 			throw new TimeoutException("main-thread dispatch timed out");
 		if (error != null) throw error;
 		return result;
+	}
+
+	// Starts a coroutine on this component from any thread (the StartCoroutine call
+	// itself is marshaled onto the main thread). Because this component is
+	// DontDestroyOnLoad the coroutine survives scene loads. Fire-and-forget: the
+	// coroutine signals its own completion (e.g. via a result object the caller
+	// polls), so use this for long operations instead of the blocking RunOnMain.
+	public void StartCoroutineOnMain(IEnumerator routine)
+	{
+		_mainThreadQueue.Enqueue(() => StartCoroutine(routine));
 	}
 
 	private static string NowRfc3339() =>

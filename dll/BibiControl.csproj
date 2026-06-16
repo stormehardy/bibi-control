@@ -29,6 +29,12 @@
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net472" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 
+  <!-- Framework assemblies beyond the default set: System.IO.Compression for
+       reading scenario .zip archives (resolved from the net472 targeting pack). -->
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+  </ItemGroup>
+
   <!-- Game + Unity + Newtonsoft assemblies from the install. Private=false: do not copy them to output. -->
   <ItemGroup>
     <Reference Include="BibitesAssembly">

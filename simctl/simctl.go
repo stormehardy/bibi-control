@@ -61,3 +61,14 @@ func (c *Client) Reload(ctx context.Context) (ipc.ReloadResult, error) {
 	err := c.r.Request(ctx, ipc.CommandReload, nil, &out)
 	return out, err
 }
+
+// NewSave mints a fresh save from a scenario (pass "" or "default" for the
+// game's bundled default) and writes it to out (an absolute .zip path),
+// returning the path actually written. Minting loads a scenario, starts a new
+// game, and runs the engine's save coroutine, so pass a context with a generous
+// deadline (tens of seconds).
+func (c *Client) NewSave(ctx context.Context, scenario, out string) (ipc.NewSaveResult, error) {
+	var res ipc.NewSaveResult
+	err := c.r.Request(ctx, ipc.CommandNewSave, ipc.NewSaveRequest{Scenario: scenario, Out: out}, &res)
+	return res, err
+}
